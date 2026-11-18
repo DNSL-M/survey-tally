@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>설문 집계기</title>
+</head>
+<body>
+<script id="tally-core">
+// 계산 로직: 화면(DOM)과 무관한 순수 함수만 둔다. tests/core.test.js가 이 블록을 꺼내 시험한다.
+var SurveyTally = (function () {
+  "use strict";
+
+  // 엑셀 복사 형식(탭 구분, 줄바꿈 줄 구분, 큰따옴표 칸)을 칸 배열의 배열로 바꾼다.
+  function parseTSV(text) {
+    var rows = [];
+    var row = [];
+    var i = 0;
+    var n = text.length;
+
+    while (i <= n) {
+      var field = null;
+      if (text.charAt(i) === '"') {
+        // 따옴표 칸: 닫는 따옴표 다음이 탭/줄바꿈/끝이어야 한다.
+        var j = i + 1;
+        var buf = "";
+        var closed = false;
+        while (j < n) {
+          var ch = text.charAt(j);
+          if (ch === '"') {
+            if (text.charAt(j + 1) === '"') { buf += '"'; j += 2; continue; }
+            closed = true;
+            j += 1;
+            break;
+          }
+          buf += ch;
+          j += 1;
+        }
+        if (closed) {
+          // 닫는 따옴표 뒤에 남은 글자가 있으면 그대로 붙인다(엑셀은 만들지 않는 형식).
+          var k = j;
+          while (k < n && !isBreak(text, k)) k += 1;
+          field = buf + text.slice(j, k);
+          i = k;
+        }
+        // 닫히지 않은 따옴표면 field가 null로 남아 아래에서 보통 칸으로 읽는다.
+      }
+      if (field === null) {
+        var e = i;
+        while (e < n && !isBreak(text, e)) e += 1;
+        field = text.slice(i, e);
+        i = e;
+      }
+      row.push(field);
+
+      if (i >= n) { rows.push(row); break; }
+      var c = text.charAt(i);
+      if (c === "\t") { i += 1; continue; }
+      // 줄바꿈: \r\n, \n, \r
+      if (c === "\r" && text.charAt(i + 1) === "\n") i += 2; else i += 1;
+      rows.push(row);
+      row = [];
+      if (i === n) break; // 마지막 줄바꿈 뒤에는 줄이 없다.
+    }
+    return rows;
+  }
+
+  function isBreak(text, idx) {
+    var c = text.charAt(idx);
+    return c === "\t" || c === "\n" || c === "\r";
+  }
+
+  function isEmptyLine(row) {
+    return row.length === 1 && row[0] === "";
+  }
+
+  // 칸 하나를 "valid" / "blank" / "excluded"로 판정한다.
+  function classifyCell(value) {
+    var v = value === undefined || value === null ? "" : String(value).trim();
+    if (v === "") return { kind: "blank" };
+    if (v === "1" || v === "2" || v === "3" || v === "4" || v === "5") {
+      return { kind: "valid", score: Number(v) };
+    }
+    return { kind: "excluded" };
+  }
+
+  // 합 ÷ 수를 소수 셋째 자리에서 반올림해 둘째 자리까지. 정수 연산으로 오차 없이 계산한다.
+  function formatAverage(sum, count) {
+    if (!count) return "-";
+    var hundredths = Math.floor((200 * sum + count) / (2 * count));
+    var whole = Math.floor(hundredths / 100);
+    var frac = hundredths % 100;
+    return whole + "." + (frac < 10 ? "0" : "") + frac;
+  }
+
+  // 붙여넣은 글 전체를 받아 문항별 결과를 돌려준다.
+  function tally(text) {
+    var rows = parseTSV(String(text === undefined || text === null ? "" : text))
+      .filter(function (r) { return !isEmptyLine(r); });
+
+    if (rows.length === 0) return { error: "empty", questions: [], respondents: 0 };
+
+    var header = rows[0];
+    if (header.length < 2) return { error: "no-questions", questions: [], respondents: rows.length - 1 };
+
+    var questions = [];
+    for (var col = 1; col < header.length; col += 1) {
+      var name = header[col].trim();
+      questions.push({
+        name: name === "" ? "(이름 없음, " + (col + 1) + "열)" : name,
+        column: col + 1,
+        valid: 0,
+        sum: 0,
+        blank: 0,
+        excluded: 0,
+        average: "-"
+      });
+    }
+
+    for (var r = 1; r < rows.length; r += 1) {
+      var cells = rows[r];
+      for (var q = 0; q < questions.length; q += 1) {
+        var result = classifyCell(cells[q + 1]); // 모자란 칸은 undefined → 빈 응답
+        var item = questions[q];
+        if (result.kind === "valid") { item.valid += 1; item.sum += result.score; }
+        else if (result.kind === "blank") item.blank += 1;
+        else item.excluded += 1;
+      }
+    }
+
+    questions.forEach(function (item) { item.average = formatAverage(item.sum, item.valid); });
+    return { error: null, questions: questions, respondents: rows.length - 1 };
+  }
+
+  return { parseTSV: parseTSV, classifyCell: classifyCell, formatAverage: formatAverage, tally: tally };
+})();
+</script>
+</body>
+</html>
